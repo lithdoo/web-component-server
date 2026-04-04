@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   resolve: {
-    dedupe: ['vscode'],
+    dedupe: ['vscode', 'vscode-languageclient', 'vscode-languageserver-protocol'],
     alias: {
       vscode: path.resolve(__dirname, 'node_modules/@codingame/monaco-vscode-extension-api'),
     },
