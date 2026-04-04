@@ -17,11 +17,16 @@
  *    (e.g. Ctrl+Space or `quickSuggestions`), the client sends `textDocument/completion` with a
  *    `TextDocumentPositionParams` built from the **current** editor selection.
  */
-import {
+/**
+ * 不要从 `vscode-languageclient/browser.js` 做运行时 import：该子路径无 `exports` 字段，
+ * 在 pnpm / 部分 Rollup 解析下会报 “failed to resolve import”。
+ * 类型从包入口 `typings`（lib/common/api）解析；ErrorAction / CloseAction 在运行时用枚举数值等价物。
+ */
+import type {
   CloseAction,
   ErrorAction,
-  type LanguageClientOptions,
-} from 'vscode-languageclient/browser.js';
+  LanguageClientOptions,
+} from 'vscode-languageclient';
 import * as vscode from 'vscode';
 import {
   LanguageClientWrapper,
@@ -29,13 +34,17 @@ import {
 } from 'monaco-languageclient/lcwrapper';
 import { getLanguageRegistration, type EditorLanguage } from '../languages/registry.js';
 
+/** 与 vscode-languageclient `ErrorAction` / `CloseAction` 枚举值一致（browser 与 node 相同）。 */
+const ERROR_CONTINUE = 1 as ErrorAction;
+const CLOSE_DO_NOT_RESTART = 1 as CloseAction;
+
 function defaultErrorHandling(): LanguageClientOptions['errorHandler'] {
   return {
     error: () => ({
-      action: ErrorAction.Continue,
+      action: ERROR_CONTINUE,
     }),
     closed: () => ({
-      action: CloseAction.DoNotRestart,
+      action: CLOSE_DO_NOT_RESTART,
     }),
   };
 }
