@@ -28,6 +28,7 @@
     "@codingame/monaco-vscode-extension-api": "^25.1.2",
     "@codingame/monaco-vscode-extensions-service-override": "^25.1.2",
     "@codingame/monaco-vscode-files-service-override": "^25.1.2",
+    "@codingame/monaco-vscode-standalone-languages": "^25.1.2",
     "@codingame/monaco-vscode-views-service-override": "^25.1.2",
     "@codingame/monaco-vscode-languages-service-override": "^25.1.2",
     "@codingame/monaco-vscode-localization-service-override": "^25.1.2",

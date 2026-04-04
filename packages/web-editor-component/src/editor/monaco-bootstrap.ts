@@ -1,3 +1,5 @@
+import './standalone-language-contributions.js';
+
 import { LogLevel } from '@codingame/monaco-vscode-api';
 import type { ILogger } from '@codingame/monaco-vscode-log-service-override';
 import getViewsServiceOverride from '@codingame/monaco-vscode-views-service-override';

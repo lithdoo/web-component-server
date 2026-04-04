@@ -15,6 +15,21 @@ export interface LanguageRegistration {
   monarchLanguage?: monaco.languages.IMonarchLanguage;
 }
 
+/** JSON has no entry in monaco-vscode-standalone-languages; use a small Monarch grammar. */
+const JSON_MONARCH: monaco.languages.IMonarchLanguage = {
+  defaultToken: '',
+  tokenizer: {
+    root: [
+      [/[{}]/, 'delimiter.bracket'],
+      [/"(?:[^"\\]|\\.)*"(?=\s*:)/, 'attribute.name'],
+      [/"(?:[^"\\]|\\.)*"/, 'string'],
+      [/\btrue\b|\bfalse\b|\bnull\b/, 'keyword'],
+      [/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/, 'number'],
+      [/,/, 'delimiter'],
+    ],
+  },
+};
+
 const TOML_MONARCH: monaco.languages.IMonarchLanguage = {
   defaultToken: '',
   tokenizer: {
@@ -60,6 +75,7 @@ const registry: Record<EditorLanguage, LanguageRegistration> = {
       aliases: ['JSON', 'json'],
       mimetypes: ['application/json'],
     },
+    monarchLanguage: JSON_MONARCH,
   },
   markdown: {
     monacoLanguageId: 'markdown',
