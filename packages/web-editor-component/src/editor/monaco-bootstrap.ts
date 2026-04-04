@@ -1,10 +1,13 @@
 import { LogLevel } from '@codingame/monaco-vscode-api';
 import type { ILogger } from '@codingame/monaco-vscode-log-service-override';
+import getViewsServiceOverride from '@codingame/monaco-vscode-views-service-override';
 import {
   MonacoVscodeApiWrapper,
   type MonacoVscodeApiConfig,
+  useOpenEditorStub,
 } from 'monaco-languageclient/vscodeApiWrapper';
 import { defineDefaultWorkerLoaders, useWorkerFactory } from 'monaco-languageclient/workerFactory';
+import { registerVirtualWorkspaceOverlay } from './virtual-workspace.js';
 
 let apiSingleton: MonacoVscodeApiWrapper | null = null;
 let startPromise: Promise<MonacoVscodeApiWrapper> | null = null;
@@ -28,6 +31,9 @@ function buildClassicApiConfig(): MonacoVscodeApiConfig {
     viewsConfig: {
       $type: 'EditorService',
     },
+    serviceOverrides: {
+      ...getViewsServiceOverride(useOpenEditorStub),
+    },
     logLevel: LogLevel.Off,
     userConfiguration: {
       json: JSON.stringify({
@@ -37,6 +43,15 @@ function buildClassicApiConfig(): MonacoVscodeApiConfig {
       }),
     },
     monacoWorkerFactory: configureClassicWorkerFactory,
+    /**
+     * Default extension host pulls in workbench code that expects Views services (`getViewContainersByLocation`).
+     * Classic editor-only apps do not register those overrides — disable extension services.
+     */
+    advanced: {
+      loadExtensionServices: false,
+      loadThemes: false,
+      enableExtHostWorker: false,
+    },
   };
 }
 
@@ -47,17 +62,17 @@ export function ensureMonacoVscodeApi(): Promise<MonacoVscodeApiWrapper> {
   if (startPromise) {
     return startPromise;
   }
-  apiSingleton = new MonacoVscodeApiWrapper(buildClassicApiConfig());
-  startPromise = apiSingleton
-    .start({
+  startPromise = (async () => {
+    await registerVirtualWorkspaceOverlay();
+    apiSingleton = new MonacoVscodeApiWrapper(buildClassicApiConfig());
+    await apiSingleton.start({
       caller: '@web-editor/component',
-      performServiceConsistencyChecks: true,
-    })
-    .then(() => {
-      if (!apiSingleton) {
-        throw new Error('MonacoVscodeApiWrapper missing after start');
-      }
-      return apiSingleton;
+      performServiceConsistencyChecks: false,
     });
+    if (!apiSingleton) {
+      throw new Error('MonacoVscodeApiWrapper missing after start');
+    }
+    return apiSingleton;
+  })();
   return startPromise;
 }

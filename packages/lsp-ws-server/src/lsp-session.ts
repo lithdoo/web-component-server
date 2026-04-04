@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import {
-  forward,
-  createServerProcess,
-  createWebSocketConnection,
-} from 'vscode-ws-jsonrpc/server';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServerProcess, createWebSocketConnection } from 'vscode-ws-jsonrpc/server';
 import type { WebSocket } from 'ws';
+import { asymmetricForward } from './asymmetric-forward.js';
+import {
+  createClientToServerMessageMap,
+  createServerToClientMessageMap,
+} from './lsp-uri-bridge.js';
 import { resolveLanguageSpawn } from './language-spawn.js';
+import { writeSessionTsconfig } from './session-tsconfig.js';
 import { wsToIWebSocket } from './ws-socket-adapter.js';
 
 export interface SessionLogger {
@@ -54,11 +59,23 @@ export function startLspSession(
     return;
   }
 
-  log.info(`[${sessionId}] Forwarding WebSocket ↔ ${spec.name} (${language})`);
+  const sessionRoot = mkdtempSync(join(tmpdir(), `lsp-ws-${sessionId}-`));
+  if (language.trim().toLowerCase() === 'typescript' || language.trim().toLowerCase() === 'ts') {
+    writeSessionTsconfig(sessionRoot);
+  }
+  log.info(`[${sessionId}] Session workspace (host): ${sessionRoot}`);
 
-  forward(clientConnection, serverConnection);
+  const toServer = createClientToServerMessageMap(sessionRoot);
+  const toClient = createServerToClientMessageMap(sessionRoot);
+
+  asymmetricForward(clientConnection, serverConnection, toServer, toClient);
 
   ws.on('close', () => {
     log.info(`[${sessionId}] WebSocket closed`);
+    try {
+      rmSync(sessionRoot, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   });
 }
