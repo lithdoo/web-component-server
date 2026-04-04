@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>minimal code-editor + LSP</title>
+    <!--
+      须从「仓库根目录」起静态服务，否则下面 /packages/... 无法解析。示例：
+        npx --yes serve . -l 5175
+      然后打开 http://localhost:5175/demos/minimal/index.html
+    -->
+    <link
+      rel="stylesheet"
+      href="/packages/web-editor-component/dist/web-editor-component.css"
+    />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      code-editor {
+        display: block;
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+      }
+    </style>
+  </head>
+  <body>
+    <code-editor
+      language="typescript"
+      lsp-url="ws://localhost:3000/lsp"
+      value="const n: number = 1;&#10;// 输入时会有联想；也可按 Ctrl+Space 手动触发补全&#10;console."
+    ></code-editor>
+    <script type="module" src="/packages/web-editor-component/dist/web-editor-component.js"></script>
+  </body>
+</html>
