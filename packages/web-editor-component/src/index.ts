@@ -14,8 +14,12 @@ export function defineCodeEditorElement(tagName: string = DEFAULT_TAG): void {
 
 export { CodeEditorElement };
 export type { EditorLanguage } from './languages/registry.js';
-export { parseEditorLanguage, getLanguageRegistration } from './languages/registry.js';
-export { buildLspWebSocketUrl } from './lsp/lsp-connection-url.js';
+export {
+  parseEditorLanguage,
+  getLanguageRegistration,
+  virtualDocumentFileUrl,
+} from './languages/registry.js';
+export { buildLspWebSocketUrl, type BuildLspWebSocketUrlOptions } from './lsp/lsp-connection-url.js';
 export { connectMonacoLspBridge, type MonacoLspBridgeOptions } from './lsp/monaco-lsp-adapter.js';
 export { createLanguageClientConfig, startLanguageClient, disposeLanguageClient } from './lsp/language-client.js';
 

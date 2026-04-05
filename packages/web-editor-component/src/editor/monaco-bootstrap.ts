@@ -2,17 +2,13 @@ import './standalone-language-contributions.js';
 
 import { LogLevel } from '@codingame/monaco-vscode-api';
 import type { ILogger } from '@codingame/monaco-vscode-log-service-override';
-import getViewsServiceOverride from '@codingame/monaco-vscode-views-service-override';
-import {
-  MonacoVscodeApiWrapper,
-  type MonacoVscodeApiConfig,
-  useOpenEditorStub,
-} from 'monaco-languageclient/vscodeApiWrapper';
+import { type MonacoVscodeApiConfig } from 'monaco-languageclient/vscodeApiWrapper';
+import { WebEditorMonacoVscodeApiWrapper } from './monaco-vscode-api-wrapper-subclass.js';
 import { defineDefaultWorkerLoaders, useWorkerFactory } from 'monaco-languageclient/workerFactory';
 import { registerVirtualWorkspaceOverlay } from './virtual-workspace.js';
 
-let apiSingleton: MonacoVscodeApiWrapper | null = null;
-let startPromise: Promise<MonacoVscodeApiWrapper> | null = null;
+let apiSingleton: WebEditorMonacoVscodeApiWrapper | null = null;
+let startPromise: Promise<WebEditorMonacoVscodeApiWrapper> | null = null;
 
 /**
  * Classic worker setup from TypeFox examples: TextMate worker is incompatible with classic mode.
@@ -33,9 +29,7 @@ function buildClassicApiConfig(): MonacoVscodeApiConfig {
     viewsConfig: {
       $type: 'EditorService',
     },
-    serviceOverrides: {
-      ...getViewsServiceOverride(useOpenEditorStub),
-    },
+    serviceOverrides: {},
     logLevel: LogLevel.Off,
     userConfiguration: {
       json: JSON.stringify({
@@ -46,11 +40,14 @@ function buildClassicApiConfig(): MonacoVscodeApiConfig {
     },
     monacoWorkerFactory: configureClassicWorkerFactory,
     /**
-     * Default extension host pulls in workbench code that expects Views services (`getViewContainersByLocation`).
-     * Classic editor-only apps do not register those overrides — disable extension services.
+     * Must load `@codingame/monaco-vscode-extensions-service-override`: the workbench still spins up an
+     * extension host and MainThread* customers (e.g. webviews). Skipping it leaves stub services and
+     * throws `Error: unsupported` / `mainPart.getContainer is not a function`.
+     * Keep `enableExtHostWorker: false` so we use the local extension host, not a separate worker
+     * (`extensionHostWorkerMain` is already unset in `configureClassicWorkerFactory`).
      */
     advanced: {
-      loadExtensionServices: false,
+      loadExtensionServices: true,
       loadThemes: false,
       enableExtHostWorker: false,
     },
@@ -60,13 +57,14 @@ function buildClassicApiConfig(): MonacoVscodeApiConfig {
 /**
  * monaco-vscode-api initializes only once per page. All `<code-editor>` instances share this wrapper.
  */
-export function ensureMonacoVscodeApi(): Promise<MonacoVscodeApiWrapper> {
+export function ensureMonacoVscodeApi(): Promise<WebEditorMonacoVscodeApiWrapper> {
   if (startPromise) {
     return startPromise;
   }
   startPromise = (async () => {
     await registerVirtualWorkspaceOverlay();
-    apiSingleton = new MonacoVscodeApiWrapper(buildClassicApiConfig());
+    ensureWorkbenchLayoutHost();
+    apiSingleton = new WebEditorMonacoVscodeApiWrapper(buildClassicApiConfig());
     await apiSingleton.start({
       caller: '@web-editor/component',
       performServiceConsistencyChecks: false,
@@ -77,4 +75,19 @@ export function ensureMonacoVscodeApi(): Promise<MonacoVscodeApiWrapper> {
     return apiSingleton;
   })();
   return startPromise;
+}
+
+const WORKBENCH_HOST_ID = 'monaco-vscode-workbench-host';
+
+/** Off-screen host so `initialize()` receives a real DOM node (see `WebEditorMonacoVscodeApiWrapper`). */
+function ensureWorkbenchLayoutHost(): void {
+  if (document.getElementById(WORKBENCH_HOST_ID)) {
+    return;
+  }
+  const el = document.createElement('div');
+  el.id = WORKBENCH_HOST_ID;
+  el.setAttribute('aria-hidden', 'true');
+  el.style.cssText =
+    'position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);pointer-events:none';
+  document.body.appendChild(el);
 }

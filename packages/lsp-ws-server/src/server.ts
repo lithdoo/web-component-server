@@ -82,8 +82,11 @@ export function createLspWsServer(options: LspWsServerOptions): LspWsServer {
       return;
     }
 
+    const filePath = url.searchParams.get('filePath')?.trim() || undefined;
+    const documentUri = url.searchParams.get('documentUri')?.trim() || undefined;
+
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      startLspSession(ws, language, log);
+      startLspSession(ws, language, log, { filePath, documentUri });
     });
   });
 

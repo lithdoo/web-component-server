@@ -2,6 +2,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, normalize, relative } from 'node:path';
 import { Message } from 'vscode-jsonrpc';
 
+function sameHostFileUri(a: string, b: string): boolean {
+  if (!a.startsWith('file:') || !b.startsWith('file:')) {
+    return false;
+  }
+  try {
+    const pa = normalize(fileURLToPath(a));
+    const pb = normalize(fileURLToPath(b));
+    return pa.toLowerCase() === pb.toLowerCase();
+  } catch {
+    return a === b;
+  }
+}
+
 function deepStringMap(value: unknown, fn: (s: string) => string): unknown {
   if (typeof value === 'string') {
     return fn(value);
@@ -115,4 +128,64 @@ export function createClientToServerMessageMap(sessionRoot: string): (m: Message
 
 export function createServerToClientMessageMap(sessionRoot: string): (m: Message) => Message {
   return (m) => mapFileUrisInMessage(m, (u) => serverUriToClientWorkspaceUri(u, sessionRoot));
+}
+
+export interface ProjectFileBridgeParams {
+  /** Absolute normalized workspace root on the host (tsconfig parent or file directory). */
+  workspaceRootFs: string;
+  /** Browser virtual URI for the open document (must match Monaco model), e.g. `file:///workspace/main-….ts`. */
+  boundVirtualUri: string;
+  /** `pathToFileURL(resolvedFilePath).href` for the bound document on the host. */
+  boundServerUri: string;
+}
+
+function mapClientUriToServerForProject(
+  uri: string,
+  workspaceRootFs: string,
+  boundVirtualUri: string,
+  boundServerUri: string,
+): string {
+  if (!uri.startsWith('file:')) {
+    return uri;
+  }
+  if (uri === boundVirtualUri) {
+    return boundServerUri;
+  }
+  return clientWorkspaceUriToServerPath(uri, workspaceRootFs);
+}
+
+function mapServerUriToClientForProject(
+  uri: string,
+  workspaceRootFs: string,
+  boundVirtualUri: string,
+  boundServerUri: string,
+): string {
+  if (!uri.startsWith('file:')) {
+    return uri;
+  }
+  if (uri === boundServerUri || sameHostFileUri(uri, boundServerUri)) {
+    return boundVirtualUri;
+  }
+  return serverUriToClientWorkspaceUri(uri, workspaceRootFs);
+}
+
+/**
+ * Maps `file:///workspace/…` to real paths under `workspaceRootFs`, except the bound virtual URI
+ * which maps to `boundServerUri` (real file on disk).
+ */
+export function createProjectBoundMessageMaps(project: ProjectFileBridgeParams): {
+  toServer: (m: Message) => Message;
+  toClient: (m: Message) => Message;
+} {
+  const { workspaceRootFs, boundVirtualUri, boundServerUri } = project;
+  return {
+    toServer: (m) =>
+      mapFileUrisInMessage(m, (u) =>
+        mapClientUriToServerForProject(u, workspaceRootFs, boundVirtualUri, boundServerUri),
+      ),
+    toClient: (m) =>
+      mapFileUrisInMessage(m, (u) =>
+        mapServerUriToClientForProject(u, workspaceRootFs, boundVirtualUri, boundServerUri),
+      ),
+  };
 }

@@ -9,7 +9,7 @@ import {
 } from '../lsp/language-client.js';
 import { buildLspWebSocketUrl } from '../lsp/lsp-connection-url.js';
 import { connectMonacoLspBridge } from '../lsp/monaco-lsp-adapter.js';
-import { parseEditorLanguage } from '../languages/registry.js';
+import { parseEditorLanguage, virtualDocumentFileUrl } from '../languages/registry.js';
 
 const HOST_STYLE_ID = 'code-editor-host-default-styles';
 
@@ -43,12 +43,15 @@ function ensureHostStyles(): void {
  *   appended automatically for `@web-editor/lsp-ws-server`. Empty = no language client.
  * - `language` — `typescript` | `json` | `markdown` | `toml` (aliases: `ts`, `md`).
  * - `value` — initial document text (large payloads should use the `value` property instead).
+ * - `file-path` — optional host path for LSP resolution (e.g. `D:\\repo\\src\\app.ts`). Requires the
+ *   server to set `LSP_ALLOWED_ROOTS`. Does not read or write disk from the component; content is still
+ *   only what you set in `value`.
  *
  * The `value` property, when assigned from JavaScript, takes precedence over the `value` attribute.
  */
 export class CodeEditorElement extends HTMLElement {
   static get observedAttributes(): string[] {
-    return ['lsp-url', 'language', 'value'];
+    return ['lsp-url', 'language', 'value', 'file-path'];
   }
 
   readonly #instanceId: string;
@@ -87,6 +90,20 @@ export class CodeEditorElement extends HTMLElement {
     }
   }
 
+  /** Host filesystem path for LSP project binding; empty = temp workspace session on the server. */
+  get filePath(): string {
+    return (this.getAttribute('file-path') ?? '').trim();
+  }
+
+  set filePath(path: string) {
+    const t = path.trim();
+    if (t) {
+      this.setAttribute('file-path', t);
+    } else {
+      this.removeAttribute('file-path');
+    }
+  }
+
   connectedCallback(): void {
     ensureHostStyles();
     this.classList.add('code-editor-host');
@@ -116,7 +133,7 @@ export class CodeEditorElement extends HTMLElement {
       }
       return;
     }
-    if (name === 'language' || name === 'lsp-url') {
+    if (name === 'language' || name === 'lsp-url' || name === 'file-path') {
       this.#abort?.abort();
       this.#bootPromise = this.#boot();
     }
@@ -196,7 +213,14 @@ export class CodeEditorElement extends HTMLElement {
     if (lspUrl.length > 0) {
       let wsUrl: string;
       try {
-        wsUrl = buildLspWebSocketUrl(lspUrl, language);
+        const fp = this.filePath;
+        wsUrl = buildLspWebSocketUrl(
+          lspUrl,
+          language,
+          fp
+            ? { filePath: fp, documentUri: virtualDocumentFileUrl(language, this.#instanceId) }
+            : undefined,
+        );
       } catch (e) {
         console.error('[code-editor] Bad lsp-url', e);
         return;

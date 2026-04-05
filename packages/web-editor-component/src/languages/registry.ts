@@ -134,3 +134,8 @@ export function modelUriForInstance(lang: EditorLanguage, instanceId: string): s
   const ext = dot === -1 ? '' : fileName.slice(dot);
   return `/workspace/${base}-${instanceId}${ext}`;
 }
+
+/** Virtual `file:///workspace/…` URI string used by Monaco / LSP (matches `modelUriForInstance`). */
+export function virtualDocumentFileUrl(lang: EditorLanguage, instanceId: string): string {
+  return `file://${modelUriForInstance(lang, instanceId)}`;
+}
