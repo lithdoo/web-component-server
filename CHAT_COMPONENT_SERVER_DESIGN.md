@@ -3,7 +3,7 @@
 > Status: **Design Draft**  
 > Scope: 通用单上下文 `<chat-view>` Web Component、WebSocket endpoint 边界，以及对应 server 的职责。  
 > Goal: 提供一个足够薄、可组合、可被 Hostra 或普通 Web 页面复用的 Chat capability。  
-> Protocol status: **协议总体方向已明确为 JSON-RPC request/response + 独立 server push event；具体 wire schema 仍待单独冻结。**
+> Protocol status: **协议总体方向已明确为 JSON-RPC request/response + 独立 server push event；Server Push 的事件模型与语义已形成 V1 草案，最终字段与扩展项仍待 Chat Protocol V1 冻结。**
 
 ## 1. 定位
 
@@ -332,7 +332,7 @@ operation 状态变化
 
 Event 不承担 request / response 语义，也不要求强行表示成 JSON-RPC notification。
 
-具体 event envelope、命名、顺序字段、replay / recovery 机制仍待后续 Chat Protocol V1 文档冻结。
+Server Push 的 V1 草案见本文后续“Server Push Event 设计”章节。
 
 ## 10. Request / Response 初步范围
 
@@ -431,7 +431,17 @@ file
 structured block
 ```
 
-是否让 content 自身拥有 `contentId`，以及一个 Message 是否允许多个 content part，当前暂不冻结。
+为了让 streaming 与未来多段 content 更自然，Server Push V1 草案倾向于让 Content 自身拥有 identity：
+
+```ts
+interface MessageContentModel {
+  id: string;
+  messageId: string;
+  type: string;
+}
+```
+
+最终 content type 枚举以及一个 Message 是否允许多个 content part，仍待 Chat Protocol V1 冻结。
 
 ### 11.3 Message Status
 
@@ -481,15 +491,15 @@ MessageContent[]
 
 Server push event 应保持和 normalized data model 一致。
 
-概念上应能分别表达：
+概念上分别表达：
 
 ```text
-Message model added / changed
-Message content changed / appended
+Message model added
+Message content added / appended
 Message status changed
 ```
 
-例如 streaming 不应要求 server 每次重发完整 Message object。
+例如 streaming 不要求 server 每次重发完整 Message object。
 
 理想的数据流是：
 
@@ -507,7 +517,7 @@ Status = streaming
 Status = completed
 ```
 
-具体 event 名称、delta 表达方式和 wire schema 当前仍待定。
+V1 的具体事件草案见后续章节。
 
 ## 14. Chat Status 与 Message Status 分离
 
@@ -548,12 +558,10 @@ Message Status:
 
 ```ts
 messages: Map<MessageId, MessageModel>
-contents: Map<MessageId, MessageContent>
+contents: Map<ContentId, MessageContent>
 statuses: Map<MessageId, MessageStatus>
 order: MessageId[]
 ```
-
-如果未来 Content 自身拥有 identity，则 contents 可以进一步改成按 `contentId` 索引。
 
 这种模型有利于：
 
@@ -772,9 +780,538 @@ packages/
 packages/chat-protocol/
 ```
 
-协议尚未冻结前，不为了理论分层提前固化大量类型。
+协议尚未完全冻结前，不为了理论分层提前固化大量类型。
 
-## 23. 当前冻结的设计决定
+## 23. Server Push Event 设计
+
+Server Push Event 是服务端向 `<chat-view>` 发布的**已发生可观察事实**。
+
+它不是 command，也不是 request/response 的另一种表示。
+
+核心语义：
+
+```text
+JSON-RPC request/response
+  = client intent + server acceptance/rejection
+
+Server Push Event
+  = server-side observable fact
+```
+
+### 23.1 Event Envelope
+
+V1 草案使用独立 envelope：
+
+```ts
+interface ChatEvent<T = unknown> {
+  event: string;
+  seq: number;
+  data: T;
+}
+```
+
+示例：
+
+```json
+{
+  "event": "content.delta",
+  "seq": 42,
+  "data": {
+    "contentId": "c_123",
+    "delta": "森林逐渐"
+  }
+}
+```
+
+Event frame 不带 `jsonrpc: "2.0"`，以便接收端明确区分 JSON-RPC 与 Server Push Event：
+
+```ts
+if (frame.jsonrpc === "2.0") {
+  handleRpc(frame);
+} else if (typeof frame.event === "string") {
+  handleEvent(frame);
+}
+```
+
+V1 暂不要求 timestamp、trace id 或任意 metadata 字段。
+
+### 23.2 `seq` 语义
+
+`seq` 是当前 Chat binding / event stream 上统一的服务端事件顺序号。
+
+要求：
+
+```text
+严格单调递增
+所有 Server Push Event 共用同一序列
+不按 event type 单独计数
+不按 message 单独计数
+JSON-RPC response 不占用 event seq
+```
+
+例如：
+
+```text
+41 message.added
+42 content.added
+43 message.status.changed
+44 content.delta
+45 chat.changed
+46 content.delta
+47 message.status.changed
+```
+
+V1 中 `seq` 主要用于：
+
+```text
+确定 reducer 输入顺序
+测试断言
+debug / log correlation
+检测实现中的事件顺序错误
+```
+
+是否将 `seq` 进一步用作 reconnect replay cursor，留待恢复协议设计时决定。
+
+### 23.3 Event Namespace
+
+V1 草案将事件分成四组：
+
+```text
+chat.*
+message.*
+content.*
+operation.*
+```
+
+其中：
+
+```text
+chat.*
+  = 整个 Chat viewport 的可见 projection
+
+message.*
+  = Message model 与 Message runtime status
+
+content.*
+  = Message content identity 与 streaming payload
+
+operation.*
+  = 异步操作生命周期
+```
+
+### 23.4 `chat.changed`
+
+用于更新标题、Chat status、可执行 capability 等轻量 view state。
+
+概念示例：
+
+```json
+{
+  "event": "chat.changed",
+  "seq": 31,
+  "data": {
+    "title": "Dayloom · Play",
+    "status": {
+      "text": "Thinking…",
+      "busy": true
+    },
+    "capabilities": {
+      "sendMessage": false,
+      "cancelOperation": true
+    }
+  }
+}
+```
+
+V1 倾向于让 `chat.changed` 携带当前完整的轻量 Chat display state，而不是 JSON Patch。
+
+原因是该对象很小，replacement semantics 更简单、更确定。
+
+业务内部状态机不能直接通过 `chat.changed` 暴露；这里仅包含 `<chat-view>` 真正需要的显示状态和 capability。
+
+### 23.5 `message.added`
+
+表示 transcript 中新增一个 Message model：
+
+```json
+{
+  "event": "message.added",
+  "seq": 32,
+  "data": {
+    "message": {
+      "id": "m_123",
+      "role": "assistant",
+      "createdAt": "..."
+    }
+  }
+}
+```
+
+`message.added` 不携带完整 content，也不携带 runtime status。
+
+V1 优先保持 transcript append-only，因此暂不设计：
+
+```text
+message.updated
+message.deleted
+message.moved
+```
+
+如果未来确有跨业务需求，再单独扩展编辑、删除、branching 或 regenerate 语义。
+
+### 23.6 `content.added`
+
+为了支持 streaming，并给未来一个 Message 拥有多个 content part 留出空间，Server Push V1 草案让 Content 拥有独立 identity。
+
+概念模型：
+
+```ts
+interface MessageContentModel {
+  id: string;
+  messageId: string;
+  type: string;
+}
+```
+
+建立 content：
+
+```json
+{
+  "event": "content.added",
+  "seq": 33,
+  "data": {
+    "content": {
+      "id": "c_456",
+      "messageId": "m_123",
+      "type": "text"
+    }
+  }
+}
+```
+
+V1 可以只实现 `text`，但 Message identity 不与具体 payload 表达绑定。
+
+### 23.7 `content.delta`
+
+用于向已存在的 content 追加 streaming payload：
+
+```json
+{
+  "event": "content.delta",
+  "seq": 34,
+  "data": {
+    "contentId": "c_456",
+    "delta": "树林"
+  }
+}
+```
+
+```json
+{
+  "event": "content.delta",
+  "seq": 35,
+  "data": {
+    "contentId": "c_456",
+    "delta": "逐渐暗了下来。"
+  }
+}
+```
+
+对于 V1 text content，`delta` 明确定义为 append-only：
+
+```text
+nextText = currentText + delta
+```
+
+V1 不支持：
+
+```text
+range replace
+splice
+delete
+JSON Patch
+任意 content rewrite
+```
+
+如果业务需要重写已有 content，应在未来以新的明确语义扩展，而不是让 `delta` 同时承担 patch 语义。
+
+V1 暂不定义 `content.completed`；Message 进入 terminal status 后，其当前 content 视为 settled。
+
+### 23.8 `message.status.changed`
+
+Message status 独立于 Message model 和 Content 更新：
+
+```json
+{
+  "event": "message.status.changed",
+  "seq": 36,
+  "data": {
+    "messageId": "m_123",
+    "status": {
+      "state": "streaming"
+    }
+  }
+}
+```
+
+完成时：
+
+```json
+{
+  "event": "message.status.changed",
+  "seq": 49,
+  "data": {
+    "messageId": "m_123",
+    "status": {
+      "state": "completed"
+    }
+  }
+}
+```
+
+候选状态：
+
+```text
+pending
+streaming
+completed
+failed
+cancelled
+```
+
+最终状态枚举仍待 Chat Protocol V1 根据真实 backend 行为冻结。
+
+协议不要求所有 role 经过相同状态轨迹。例如用户 Message 可以建立后直接处于 completed，而 assistant Message 可能经过：
+
+```text
+pending -> streaming -> completed
+```
+
+### 23.9 Operation Events
+
+Operation 与 Message 是两个不同实体。
+
+一次异步 operation 可能：
+
+```text
+产生 0 条 Message
+产生 1 条 Message
+产生多条 Message
+失败但没有创建 Message
+被取消
+```
+
+因此异步业务生命周期不应塞进 Message status。
+
+V1 草案包含：
+
+```text
+operation.started
+operation.completed
+operation.failed
+operation.cancelled
+```
+
+开始：
+
+```json
+{
+  "event": "operation.started",
+  "seq": 30,
+  "data": {
+    "operationId": "op_100",
+    "kind": "message"
+  }
+}
+```
+
+完成：
+
+```json
+{
+  "event": "operation.completed",
+  "seq": 50,
+  "data": {
+    "operationId": "op_100"
+  }
+}
+```
+
+失败：
+
+```json
+{
+  "event": "operation.failed",
+  "seq": 50,
+  "data": {
+    "operationId": "op_100",
+    "error": {
+      "code": "BACKEND_ERROR",
+      "message": "Unable to generate reply."
+    }
+  }
+}
+```
+
+取消完成后由 `operation.cancelled` 表达。
+
+JSON-RPC `cancelOperation` 的成功 response 只表示取消请求被接受，不表示 operation 已经终止；真正终止由 terminal operation event 表达。
+
+### 23.10 一次标准 Send 的时序
+
+`sendMessage` 属于 Request / Response Plane：
+
+```text
+chat.sendMessage(...)
+        |
+        v
+JSON-RPC response
+{ operationId: op1 }
+```
+
+JSON-RPC success 只表示 server 已接受请求并建立 operation，不代表 assistant 已生成完成。
+
+随后 Server Push Event 可以形成：
+
+```text
+101 operation.started(op1)
+
+102 message.added(user1)
+103 content.added(userContent1)
+104 message.status.changed(user1, completed)
+
+105 chat.changed(busy=true, send=false, cancel=true)
+
+106 message.added(assistant1)
+107 content.added(assistantContent1)
+108 message.status.changed(assistant1, streaming)
+
+109 content.delta("森林")
+110 content.delta("里传来")
+111 content.delta("低沉的脚步声。")
+
+112 message.status.changed(assistant1, completed)
+113 operation.completed(op1)
+114 chat.changed(busy=false, send=true, cancel=false)
+```
+
+具体某些相邻事件是否可以省略，留给最终 Protocol V1 冻结；但实体边界和语义方向保持不变。
+
+### 23.11 RPC Response 与 Operation Event 的顺序
+
+对于一个成功接受并创建异步 operation 的 JSON-RPC command，V1 倾向于要求：
+
+```text
+request
+  -> RPC response { operationId }
+  -> operation.started
+  -> related events...
+```
+
+也就是说，与该 operation 相关的 Server Push Event 不应在客户端获得 `operationId` 的 RPC response 之前发出。
+
+这样 `<chat-view>` 可以先建立 command 与 operation 的关联，再消费对应事件。
+
+最终是否将此要求定义成严格 wire invariant，需要在实际 server 实现验证后冻结。
+
+### 23.12 Snapshot / Query 与 Event 的一致性
+
+Request/Response 读取到的完整或分离 projection，与 Event Plane 必须描述同一套 normalized state。
+
+原则上应满足：
+
+```text
+State A
++ Events(A -> B)
+= State B
+```
+
+例如：
+
+```text
+messages
+contents
+message statuses
+chat state
+active operations
+```
+
+不应在 Event Plane 中维护一套只能通过 event 理解、却无法从 server authoritative state 重新构建的隐藏 UI 状态。
+
+这条约束用于保证：
+
+```text
+首次加载
+reconnect
+重新同步
+event reducer
+contract test
+```
+
+都基于同一 projection model。
+
+### 23.13 Event 只描述事实，不发送 UI Command
+
+禁止把 Server Push Event 设计成 imperative UI command，例如：
+
+```text
+message.generate
+ui.disableInput
+ui.scrollToBottom
+ui.showSpinner
+```
+
+应表达事实或 capability：
+
+```text
+chat.changed(sendMessage=false, busy=true)
+message.status.changed(streaming)
+content.delta(...)
+```
+
+如何渲染这些事实属于 `<chat-view>` 自身职责。
+
+因此 `<chat-view>` 保持 reducer + renderer，而不是远程 UI command executor。
+
+### 23.14 Server Push V1 初步事件集
+
+当前草案优先控制在以下 9 个事件：
+
+```text
+chat.changed
+
+message.added
+message.status.changed
+
+content.added
+content.delta
+
+operation.started
+operation.completed
+operation.failed
+operation.cancelled
+```
+
+V1 暂不引入：
+
+```text
+message.updated
+message.deleted
+content.updated
+content.deleted
+typing
+presence
+read receipt
+reaction
+tool call
+reasoning
+citation
+attachment
+```
+
+这些能力必须由真实跨业务需求驱动，而不是为了协议理论完整性提前加入。
+
+## 24. 当前冻结的设计决定
 
 当前阶段冻结以下决定：
 
@@ -782,19 +1319,26 @@ packages/chat-protocol/
 2. 一个组件实例只绑定一个当前 Chat endpoint/context。
 3. 标题、Chat status、Message model、Message content、Message status、streaming 和 capability 等数据全部经 WS 传输。
 4. request/response 使用 JSON-RPC 2.0。
-5. server push event 使用独立 Event Plane；具体 event wire schema 待定。
-6. Message model、Message content、Message status 分离建模和同步。
-7. Message model/content 的读取应支持批量方式，避免 N+1 RPC。
-8. Chat status 与 Message status 分离。
-9. WC 不实现 session discovery / list / switch / rename / delete。
-10. WC 不理解具体业务 backend、session、World 或 runtime。
-11. endpoint/server 不为了 UI 复制第二份业务 canonical state。
-12. reconnect 后由 server-side state 驱动 UI 恢复。
-13. Hostra 只负责 window/process physical lifecycle 和 endpoint composition。
-14. 通用 `chat-server` 可以是 helper/reference implementation，但不是强制中央 server。
-15. 最终 JSON-RPC method 名称、参数、结果以及 Event schema 在 Chat Protocol V1 中单独冻结。
+5. server push 使用独立 Event Plane，不使用 JSON-RPC notification 表达 Chat projection event。
+6. Server Push Event 使用统一 `event + seq + data` envelope 作为 V1 草案方向。
+7. `seq` 对一个 Chat binding 的 Server Push Event 统一严格递增；JSON-RPC response 不占用该序列。
+8. Server Push Event 按 `chat.* / message.* / content.* / operation.*` 分组。
+9. Message model、Message content、Message status 分离建模和同步。
+10. Content 在 Server Push 草案中拥有独立 identity；text streaming 使用 append-only `content.delta`。
+11. Chat status 与 Message status 分离。
+12. Operation 与 Message 生命周期分离，异步 operation 的最终结果由 Server Push terminal event 表达。
+13. Message model/content 的读取应支持批量方式，避免 N+1 RPC。
+14. Event 只描述已发生的事实或当前 projection，不充当远程 UI command。
+15. Request/Response state 与 Event reducer 必须描述同一套 authoritative projection。
+16. WC 不实现 session discovery / list / switch / rename / delete。
+17. WC 不理解具体业务 backend、session、World 或 runtime。
+18. endpoint/server 不为了 UI 复制第二份业务 canonical state。
+19. reconnect 后由 server-side state 驱动 UI 恢复。
+20. Hostra 只负责 window/process physical lifecycle 和 endpoint composition。
+21. 通用 `chat-server` 可以是 helper/reference implementation，但不是强制中央 server。
+22. 最终 JSON-RPC method 名称、参数、结果、Message/Content/Status 枚举以及 replay/recovery 细节在 Chat Protocol V1 中单独冻结。
 
-## 24. V1 成功标准
+## 25. V1 成功标准
 
 第一版完成时，至少应证明：
 
@@ -805,15 +1349,17 @@ endpoint 可以通过 WS 提供标题 / Chat status
 可以分别获取 Message model 与 Message content
 可以独立接收 Message content / Message status 更新
 用户输入通过 JSON-RPC request 发送
-assistant 回复可以通过 server push event streaming
+assistant 回复可以通过 content.delta server push event streaming
 send / cancel 等能力由 endpoint 驱动
-断线后可以重新连接同一个 endpoint 并恢复可见状态
+JSON-RPC command 与异步 operation 生命周期清晰分离
+Server Push Event 可以确定性 reducer 到 normalized projection
+断线后可以重新连接同一个 endpoint 并由 server authoritative state 恢复可见状态
 同一个 <chat-view> 无需修改即可接入两个不同业务 endpoint
 Hostra 可以启动业务 server，并把动态 ws-url 交给窗口中的 <chat-view>
 ```
 
-具体 JSON-RPC method 字段和 Event wire schema 不属于这一阶段的冻结内容。
+最终 JSON-RPC 字段、状态枚举以及 reconnect replay 策略不属于这一阶段的冻结内容。
 
-## 25. 一句话定义
+## 26. 一句话定义
 
-> **`<chat-view>` 是一个由单一 WebSocket endpoint 完全驱动的、单上下文、业务无关的极薄 Chat viewport；Request/Response 使用 JSON-RPC，Server Push 使用独立 Event Plane，Message 的 model、content 和 status 分离同步，而会话管理、业务语义和应用编排全部位于组件之外。**
+> **`<chat-view>` 是一个由单一 WebSocket endpoint 完全驱动的、单上下文、业务无关的极薄 Chat viewport；Request/Response 使用 JSON-RPC，Server Push 使用独立的有序事实事件流，Message 的 model、content 和 status 分离同步，而会话管理、业务语义和应用编排全部位于组件之外。**
