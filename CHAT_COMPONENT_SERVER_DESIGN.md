@@ -1,8 +1,9 @@
 # Generic Chat View / Server Design
 
 > Status: **Design Draft**  
-> Scope: 通用单上下文 `<chat-view>` Web Component、对应的本地 Chat Server，以及业务 Adapter 边界。  
-> Goal: 提供一个足够薄、可组合、可被 Hostra 或普通 Web 页面复用的 Chat capability。
+> Scope: 通用单上下文 `<chat-view>` Web Component、WebSocket endpoint 边界，以及对应 server 的职责。  
+> Goal: 提供一个足够薄、可组合、可被 Hostra 或普通 Web 页面复用的 Chat capability。  
+> Protocol status: **WebSocket 协议具体格式待定；本文只冻结职责边界与交互原则。**
 
 ## 1. 定位
 
@@ -11,24 +12,71 @@
 ```text
 <chat-view>
       |
-      | WebSocket Chat Protocol
+      | one WebSocket URL
       v
-  chat-server
+WebSocket Chat Endpoint
       |
-      | Chat Backend Interface
       v
- business adapter
+business / agent / runtime
 ```
 
-它不是完整聊天应用框架，也不负责 workspace、会话列表、导航或业务状态管理。
+`<chat-view>` 不是完整聊天应用框架，也不负责 workspace、会话列表、导航、业务状态管理或后端选择。
 
 核心原则：
 
-> `<chat-view>` 是一个 single-context chat viewport。它只展示并操作当前绑定的对话上下文，不拥有 conversation/session discovery、navigation 或 session switching。
+> `<chat-view>` 是一个由 WebSocket endpoint 完全驱动的 single-context chat viewport。
 
-一个组件实例在任意时刻只对应一个当前 Chat context。需要切换业务上下文时，由外部宿主销毁、重建或重新绑定组件，而不是由组件内部维护会话列表。
+组件只接收一个 WebSocket URL。连接建立后，标题、状态、消息、streaming、输入发送、取消能力以及恢复所需数据都通过该 WebSocket 交互。
 
-## 2. 目标
+WebSocket connection / endpoint 本身就是当前 Chat context 的 binding。
+
+## 2. 与 Editor Capability 的一致性
+
+该设计沿用仓库现有 editor capability 的基本方式：
+
+```text
+<code-editor>
+      |
+      | lsp-url
+      v
+lsp-ws-server
+      |
+      v
+language server
+```
+
+对应 Chat：
+
+```text
+<chat-view>
+      |
+      | ws-url
+      v
+chat endpoint
+      |
+      v
+business backend
+```
+
+两者共同遵循：
+
+```text
+Web Component
+  = browser-side capability view
+
+WebSocket URL
+  = capability binding
+
+Server / endpoint
+  = capability implementation boundary
+
+Hostra
+  = local window / process orchestrator
+```
+
+组件不需要理解 endpoint 背后的具体实现。
+
+## 3. V1 目标
 
 V1 只解决四件事：
 
@@ -36,10 +84,10 @@ V1 只解决四件事：
 标题栏 / 状态栏
 对话消息列表
 输入窗口
-与 chat-server 的单上下文实时通信
+通过单一 WebSocket endpoint 进行实时交互
 ```
 
-组件应当能够用于不同业务，例如：
+组件应可直接复用于不同业务，例如：
 
 ```text
 AI assistant
@@ -48,12 +96,12 @@ Dayloom
 代码 Agent
 NPC / game conversation
 运维助手
-其他基于对话的本地工具
+其他基于对话的工具
 ```
 
-这些业务共享同一套 UI 和 transport，但各自拥有自己的后端语义。
+这些业务可以拥有完全不同的 runtime，只要其 endpoint 实现 `<chat-view>` 所需的 Chat WebSocket Protocol。
 
-## 3. 非目标
+## 4. 非目标
 
 V1 明确不实现：
 
@@ -63,18 +111,19 @@ session switch
 new chat / delete chat / rename chat
 workspace navigation
 history browser
+backend selector
+model selector
 业务设置页
-模型选择策略
 业务工具栏
 业务状态机
-World / Draft / Archive 等领域对象
+业务领域对象
 ```
 
-这些能力属于外部宿主或具体业务。
+尤其不应因为某个业务需要多会话，就把 session manager 加进 `<chat-view>`。
 
-`<chat-view>` 也不应逐渐膨胀成完整的 Chat application shell。
+如果产品需要多个 conversation，应由外部 shell、页面布局或 Hostra window composition 负责组织多个 binding。
 
-## 4. 组件结构
+## 5. 组件结构
 
 UI 保持极简：
 
@@ -90,47 +139,39 @@ UI 保持极简：
 └──────────────────────────────┘
 ```
 
-### 4.1 标题栏 / 状态栏
+### 5.1 标题栏 / 状态栏
 
-只表达当前上下文的可见状态，例如：
+只显示当前 endpoint 提供的可见信息，例如：
 
 ```text
 title
 status text
-busy / connected / disconnected
-optional minimal host-provided action slot
+busy / ready
+connected / disconnected
 ```
 
-它不是 navigation bar，也不是 session toolbar。
+标题和业务状态不通过宿主页面单独配置，而由 WebSocket 数据驱动。
 
-不在组件内加入：
+浏览器侧的物理连接状态可以由组件自身推导。
 
-```text
-session selector
-model selector
-workspace selector
-settings menu
-history menu
-```
+标题栏不是 navigation bar，也不是 session toolbar。
 
-如业务确实需要额外按钮，应优先通过 slot 或外部布局组合，而不是扩展组件的业务 API。
-
-### 4.2 对话列表
+### 5.2 对话消息列表
 
 负责：
 
 ```text
 消息渲染
-用户 / assistant 消息区分
-streaming delta 渲染
+不同消息角色的基础展示
+streaming 增量渲染
 滚动行为
 当前生成状态
-基础错误提示
+基础错误 / 断线提示
 ```
 
-消息列表只理解通用 Chat message，不理解业务领域对象。
+消息列表只理解最终冻结的通用 Chat Protocol，不理解业务内部对象。
 
-### 4.3 输入窗口
+### 5.3 输入窗口
 
 V1 composer 只负责：
 
@@ -138,12 +179,14 @@ V1 composer 只负责：
 text input
 send
 busy / disabled
-optional cancel
+可选 cancel
 ```
 
-不负责模型、Agent mode、知识库、业务操作模式等配置。
+是否允许发送、是否允许取消等能力同样由 WebSocket endpoint 驱动。
 
-## 5. Web Component 边界
+输入区不负责模型、Agent mode、知识库、World mode 等业务配置。
+
+## 6. Web Component 公共边界
 
 组件名冻结为：
 
@@ -151,372 +194,238 @@ optional cancel
 <chat-view></chat-view>
 ```
 
-组件只拥有 presentation 和当前连接的交互状态。
-
-它不拥有业务 canonical state。
-
-推荐的最小配置形态：
+V1 的核心公共输入只有一个 WebSocket URL：
 
 ```html
-<chat-view
-  server-url="ws://127.0.0.1:8081/chat"
-></chat-view>
+<chat-view ws-url="ws://127.0.0.1:8081/chat"></chat-view>
 ```
 
-复杂配置通过 property 传入，而不是不断增加 HTML attribute：
+对应概念上的 JavaScript API 也应保持极小：
 
 ```ts
-chat.connection = {
-  url,
-  token,
-};
-
-chat.context = {
-  backend: "some-backend",
-  params: {...},
-};
+chatView.wsUrl = "ws://127.0.0.1:8081/chat";
 ```
 
-`context.params` 对组件本身应当是 opaque data。组件不得解析具体业务字段。
+实现可以提供必要的生命周期辅助方法，例如重新连接或等待初始化完成，但不应再增加业务配置对象。
 
-组件可暴露少量通用 DOM event，例如：
+明确不提供：
 
 ```text
-chat-ready
-chat-state-change
-chat-error
-chat-close
+chatView.backend
+chatView.context
+chatView.session
+chatView.messages = ...
+chatView.title = ...
+chatView.status = ...
 ```
 
-组件内部的 token/delta 流不要求宿主页面逐条处理；组件自己消费协议事件并更新 transcript。
+这些数据都应来自 WebSocket。
 
-## 6. 单上下文模型
+因此 `<chat-view>` 的宿主不需要知道当前 endpoint 对应 Dayloom、客服系统还是其他业务。
 
-组件和 server 都不提供 session switching API。
+## 7. WebSocket URL 即 Chat Binding
 
-推荐模型：
+一个 `<chat-view>` instance 在任意时刻绑定一个 WebSocket URL：
 
 ```text
-一个 <chat-view>
-        =
-一个当前 connection/context binding
+<chat-view>
+    |
+    | ws-url
+    v
+one endpoint
+    =
+one current chat context
 ```
 
-业务切换由外部控制：
+组件不额外发送“切换 session”之类的业务控制请求。
+
+如果需要切换上下文，由外部组合层改变 `ws-url`、销毁组件或创建新的组件实例：
 
 ```text
-close / dispose current binding
-            |
-            v
-open / bind another context
+old ws-url
+   |
+   v
+close old connection
+   |
+   v
+new ws-url
+   |
+   v
+connect new endpoint
 ```
 
-这意味着 Chat Protocol V1 不需要：
+因此 Chat Protocol 不需要承担 conversation discovery 或 session switching。
+
+## 8. 所有 Chat 数据都通过 WebSocket
+
+连接建立后，Chat view 所需的数据统一通过 WebSocket 传输。
+
+包括但不限于：
 
 ```text
-session.list
-session.switch
-session.rename
-session.delete
+initial visible state / snapshot
+标题
+状态
+消息历史或当前可见消息
+新消息
+streaming 增量
+发送能力
+取消能力
+操作状态
+错误状态
+恢复 / 重连后的重新同步数据
 ```
 
-如果未来某个产品需要会话列表，应当由产品自己的 shell、sidebar、launcher 或 Hostra window composition 实现。
+客户端产生的 Chat 交互也通过同一连接发送：
 
-## 7. Chat Server 定位
+```text
+用户输入
+发送操作
+取消操作
+未来经确认属于通用 Chat 的交互
+```
 
-`chat-server` 是通用 transport / application adapter host，不是业务 runtime。
+不设计第二条 REST 数据通道，也不要求宿主页面另外注入 transcript、title 或业务状态。
 
-它负责：
+如未来确需 HTTP，它应服务于静态资源、health check 等非 Chat 数据面，不应形成第二套 Chat state transport。
+
+## 9. WebSocket 协议：待定
+
+本阶段**不冻结具体 WebSocket message schema**。
+
+因此本文不规定：
+
+```text
+具体 message type 名称
+request / response envelope
+JSON-RPC 或自定义 event protocol
+message id 格式
+stream delta 格式
+snapshot 格式
+error envelope
+cancel message 格式
+版本协商方式
+```
+
+这些内容应在实现 `<chat-view>` 前单独设计并形成 Chat Protocol V1 文档。
+
+当前只冻结以下协议层原则：
+
+1. 一个连接对应一个当前 Chat binding。
+2. 连接建立后，server 必须能够驱动完整可见 UI。
+3. server 是 Chat visible state 的来源；组件不维护业务 canonical state。
+4. streaming 必须作为协议的一等能力考虑。
+5. cancellation 是否支持由 endpoint 表达，组件不得假定所有 backend 都可取消。
+6. reconnect 后必须存在重新建立 UI projection 的明确机制。
+7. 协议不得暴露特定业务内部对象。
+8. 协议不得承担 session list / switch / rename / delete。
+
+## 10. Reconnect 与恢复原则
+
+`<chat-view>` 可以负责 WebSocket 物理重连，但不能把浏览器本地 transcript 当成业务事实源。
+
+推荐语义：
+
+```text
+WebSocket disconnected
+        |
+        v
+chat-view 显示断线状态
+        |
+        v
+reconnect same ws-url
+        |
+        v
+endpoint 提供恢复当前可见状态所需的数据
+        |
+        v
+chat-view 重建 projection
+```
+
+具体采用完整 snapshot、event replay、revision cursor 或其他机制，留给 Chat Protocol V1 决定。
+
+关键约束是：
+
+> reconnect recovery 由 server-side authoritative state 驱动，而不是由组件猜测。
+
+## 11. Server / Endpoint 定位
+
+`<chat-view>` 不要求所有业务都经过一个中央通用 server。
+
+任何实现 Chat WebSocket Protocol 的 endpoint 都可以直接驱动组件：
+
+```text
+                 <chat-view>
+                     |
+                     v
+            Chat WebSocket Protocol
+                     |
+        +------------+-------------+
+        |            |             |
+        v            v             v
+     Dayloom      AI Agent      Support
+     server        server        server
+```
+
+仓库可以提供一个通用 `chat-server` package，作为：
+
+```text
+协议实现参考
+WebSocket transport helper
+connection lifecycle helper
+backend adapter scaffold
+测试 backend / demo server
+```
+
+但它不应成为所有业务必须经过的中央 runtime 或 plugin registry。
+
+## 12. Server 不拥有业务事实
+
+无论具体业务直接实现 endpoint，还是使用通用 `chat-server` helper，都必须保持以下边界。
+
+Server / transport 层可以负责：
 
 ```text
 HTTP / WebSocket endpoint
-protocol validation
+protocol parse / validation
 connection lifecycle
-当前 chat binding
-operation cancellation plumbing
-event serialization
-backend adapter 调用
+stream forwarding
+cancel plumbing
+serialization
 ```
 
-它不负责：
+它不应为了方便复制一套业务 canonical state：
 
 ```text
-业务 canonical state
+业务 conversation database
 业务状态机
-第二份 conversation store
-业务 publication
-业务 domain validation
+World / Draft / Archive
+任务 canonical state
+业务 publication state
 ```
 
-业务事实必须留在具体 backend 中。
+这些事实属于具体业务 runtime。
 
-## 8. Chat Backend Interface
+## 13. Dayloom 示例
 
-server 通过一个稳定的 backend interface 接入不同业务。
+Dayloom 是 `<chat-view>` 的一个使用方，而不是组件的内建业务。
 
-示意接口：
-
-```ts
-export interface ChatBackend {
-  open(input: unknown): Promise<ChatBinding>;
-}
-
-export interface ChatBinding {
-  snapshot(): Promise<ChatSnapshot>;
-
-  send(
-    input: ChatInput,
-    context: ChatOperationContext,
-  ): AsyncIterable<ChatEvent>;
-
-  cancel?(operationId: string): Promise<void>;
-
-  close(): Promise<void>;
-}
-```
-
-如果业务需要少量额外操作，可以后续增加通用 `action.invoke` 机制，而不是把业务命令写进协议本身。
-
-例如 Dayloom 的 `submit` 不应该成为 `dayloom.submit` 协议方法；它可以由 Dayloom adapter 暴露为一个 generic action。
-
-## 9. Chat Protocol V1
-
-协议目标是描述用户可观察的 Chat 行为，而不是暴露后端内部对象。
-
-### 9.1 Client -> Server
-
-V1 建议只包含：
-
-```text
-chat.open
-message.send
-operation.cancel
-chat.close
-```
-
-其中 `chat.open` 携带 backend 和 opaque context：
-
-```json
-{
-  "type": "chat.open",
-  "backend": "dayloom",
-  "context": {}
-}
-```
-
-### 9.2 Server -> Client
-
-V1 建议只包含：
-
-```text
-chat.snapshot
-message.added
-message.delta
-message.completed
-operation.started
-operation.completed
-operation.failed
-chat.updated
-chat.closed
-```
-
-组件不应直接接收具体 backend runtime 的内部对象。
-
-例如以下对象不应进入通用协议：
-
-```text
-Dayloom CoreState
-DraftSnapshot
-ArchiveCommit
-Aggregate Head
-业务 transaction object
-```
-
-## 10. 通用消息模型
-
-V1 可以从最小文本消息开始：
-
-```ts
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: ChatContent[];
-  createdAt?: string;
-}
-
-export type ChatContent = {
-  type: "text";
-  text: string;
-};
-```
-
-未来如果确有跨业务需求，再扩展：
-
-```text
-image
-file
-structured block
-```
-
-不要提前把特定业务 payload 混入核心 message schema。
-
-## 11. 状态模型
-
-Chat UI 只需要非常有限的状态：
-
-```ts
-export interface ChatSnapshot {
-  title?: string;
-  status?: {
-    text?: string;
-    busy?: boolean;
-    connected?: boolean;
-  };
-  messages: ChatMessage[];
-  capabilities?: {
-    send?: boolean;
-    cancel?: boolean;
-  };
-}
-```
-
-业务可以决定这些状态的语义，但 WC 只负责显示和执行通用能力。
-
-例如：
-
-```text
-"Thinking..."
-"Waiting for user"
-"Disconnected"
-```
-
-均可以作为纯展示状态，而不要求组件理解业务状态机。
-
-## 12. Streaming
-
-streaming 是通用 Chat capability，应由协议原生支持。
-
-典型流程：
-
-```text
-message.send
-    |
-    v
-operation.started
-    |
-    v
-message.added
-    |
-    +--> message.delta
-    +--> message.delta
-    +--> message.delta
-    |
-    v
-message.completed
-    |
-    v
-operation.completed
-```
-
-组件维护当前 streaming message，并负责将 delta 合并到可见 transcript。
-
-外部宿主不需要处理每个 token。
-
-## 13. Cancellation
-
-cancel 是 Chat 交互中少数值得进入通用协议的 operation capability。
-
-组件只知道：
-
-```text
-当前 operation 是否可取消
-operation.cancel(operationId)
-```
-
-取消的真正语义由 backend 决定。
-
-如果 backend 不支持 cancel，snapshot/capabilities 中不暴露该能力。
-
-## 14. Reconnect
-
-V1 不要求客户端拥有复杂的 session recovery manager。
-
-推荐原则：
-
-```text
-WebSocket reconnect
-      |
-      v
-重新 chat.open 当前 context
-      |
-      v
-server/backend 返回新的 chat.snapshot
-```
-
-snapshot 是重新建立 UI projection 的唯一依据。
-
-组件不应通过猜测本地 transcript 来恢复业务 canonical state。
-
-## 15. Hostra 组合
-
-Hostra 只负责物理宿主能力：
-
-```text
-spawn chat-server
-open BrowserWindow
-close BrowserWindow
-observe subprocess lifecycle
-```
-
-Hostra 不需要知道 Chat backend 的业务语义。
-
-例如：
-
-```text
-Hostra
- |
- +-- process: chat-server
- |
- +-- window A
- |    +-- <chat-view> -> business context A
- |
- +-- window B
-      +-- <chat-view> -> business context B
-```
-
-多个 conversation 可以表现为多个窗口，也可以由更高层业务 shell 决定如何组织。
-
-`<chat-view>` 本身仍然只处理一个 context。
-
-## 16. Dayloom Adapter 示例
-
-Dayloom 只是通用 Chat Backend 的一个实现。
+可以形成：
 
 ```text
 <chat-view>
       |
+      | ws-url
       v
-chat-server
-      |
-      v
-Dayloom ChatBackend adapter
+Dayloom Chat Endpoint
       |
       v
 @dayloom/core
 ```
 
-映射可以类似：
+Dayloom endpoint 负责把 Dayloom Core 的可观察 Chat 行为转换成未来冻结的通用 Chat Protocol。
 
-```text
-chat.open          -> open/create Dayloom Session binding
-message.send       -> session send / turn
-message.delta      <- Core turn delta
-message.completed  <- accepted assistant reply
-operation.cancel   -> Core cancel
-chat.snapshot      <- Core projection
-```
-
-以下 Dayloom 内部概念不进入通用 WC/server 协议：
+以下 Dayloom 内部概念不应直接进入组件：
 
 ```text
 World
@@ -525,46 +434,55 @@ Candidate
 Archive
 Publication
 Aggregate Head
+Core internal state machine
 ```
 
-如果产品需要展示这些内容，应通过其他 Web Component 或窗口组合，而不是扩大 `<chat-view>` 职责。
+如果产品需要展示 World、Draft 或文件，应使用其他 Web Component / window capability 组合，而不是扩大 `<chat-view>`。
 
-## 17. 与 Editor Capability 的一致性
+## 14. Hostra 组合
 
-该设计沿用仓库现有 editor capability 的基本结构：
+Hostra 只负责物理宿主和编排：
 
 ```text
-<code-editor>
-      |
-      v
-lsp-ws-server
-      |
-      v
-language server
+spawn business/chat server
+observe subprocess lifecycle
+open BrowserWindow
+close BrowserWindow
 ```
 
-对应 Chat：
+例如：
 
 ```text
-<chat-view>
-      |
-      v
-chat-server
-      |
-      v
-business ChatBackend
+Hostra
+ |
+ +-- process: Dayloom chat endpoint
+ |
+ +-- window A
+ |    +-- <chat-view ws-url=".../chat/a">
+ |
+ +-- window B
+      +-- <chat-view ws-url=".../chat/b">
 ```
 
-共同原则是：
+多个 chat context 如何组织是应用组合问题，不是 `<chat-view>` 的职责。
+
+WebSocket URL 可以由 Hostra 启动的业务进程动态生成，再传给对应窗口。
+
+## 15. Endpoint 与认证
+
+`ws-url` 应被视为 capability binding，而不只是网络地址。
+
+对于 Hostra 本地应用，推荐优先考虑由业务 server 产生不可预测、短生命周期的 endpoint / capability URL，而不是让 `<chat-view>` 额外理解 token、backend id、world id 等字段。
+
+概念上：
 
 ```text
-Web Component = browser-side capability viewport
-Server        = thin transport / process bridge
-Backend       = authoritative capability implementation
-Hostra        = local window / process orchestrator
+ws://127.0.0.1:<port>/chat/<opaque-binding>
 ```
 
-## 18. 推荐包结构
+具体 endpoint discovery、认证、token 或 capability URL 规则暂不在本文冻结，应与 Chat Protocol / Hostra integration 一起设计。
+
+## 16. 推荐包结构
 
 第一版可以按以下形式组织：
 
@@ -573,7 +491,6 @@ packages/
   chat-view/
     src/
       component/
-      protocol/
       index.ts
 
   chat-server/
@@ -581,52 +498,50 @@ packages/
       server.ts
       connection.ts
       backend.ts
-      protocol.ts
       cli.ts
 ```
 
-如果 client/server 之间共享的 protocol schema 逐渐稳定且确有独立复用需求，再抽出：
+如果协议开始稳定，并且 client/server 确实需要共享 schema，再抽出：
 
 ```text
 packages/chat-protocol/
 ```
 
-第一版不必为了理论分层提前增加 package。
+协议尚未冻结前，不为了理论分层提前固化大量类型。
 
-## 19. V1 实现约束
+## 17. V1 实现约束
 
-V1 应保持以下约束：
+V1 应保持：
 
-1. 一个 `<chat-view>` instance 只绑定一个当前 Chat context。
-2. WC 不实现 session discovery / list / switch / rename / delete。
-3. server 不保存第二份业务 canonical state。
-4. server 不依赖任何具体业务；具体业务通过 ChatBackend adapter 接入。
-5. protocol 只描述通用 Chat 可观察行为。
-6. streaming 和 cancel 属于通用 operation 能力。
-7. title/status 是 display projection，不是业务状态机。
-8. 业务专属功能优先通过外部组合或 generic capability/action 扩展。
-9. Hostra 只管理 window/process physical lifecycle。
-10. 不为了未来假设提前增加 session manager、workspace manager 或 application shell。
+1. `<chat-view>` 的核心输入只有 `ws-url`。
+2. 一个组件实例只绑定一个当前 Chat endpoint/context。
+3. 标题、状态、消息、streaming、能力等 Chat 数据全部经 WS 传输。
+4. WC 不实现 session discovery / list / switch / rename / delete。
+5. WC 不理解具体业务 backend、session、World 或 runtime。
+6. endpoint/server 不为了 UI 复制第二份业务 canonical state。
+7. reconnect 后由 server-side state 驱动 UI 恢复。
+8. Hostra 只负责 window/process physical lifecycle 和 endpoint composition。
+9. 通用 `chat-server` 可以是 helper/reference implementation，但不是强制中央 server。
+10. Chat WebSocket Protocol 的具体 wire format 在独立设计中冻结。
 
-## 20. V1 成功标准
+## 18. V1 成功标准
 
-第一版完成时，应至少能够证明：
+第一版完成时，至少应证明：
 
 ```text
 普通浏览器页面可以加载 <chat-view>
-组件可以连接通用 chat-server
-chat-server 可以加载一个测试 ChatBackend
-用户可以发送文本消息
+只设置 ws-url 即可开始工作
+endpoint 可以通过 WS 提供标题 / 状态 / 初始消息
+用户输入通过 WS 发送
 assistant 回复可以 streaming
-可以显示 title/status
-支持 backend-declared send/cancel capability
-断线重连后可以通过 snapshot 恢复可见状态
-同一个组件无需修改即可接入两个不同 ChatBackend
-Hostra 可以启动 server 并在窗口中承载组件
+send / cancel 等能力由 endpoint 驱动
+断线后可以重新连接同一个 endpoint 并恢复可见状态
+同一个 <chat-view> 无需修改即可接入两个不同业务 endpoint
+Hostra 可以启动业务 server，并把动态 ws-url 交给窗口中的 <chat-view>
 ```
 
-达到这些条件后，再根据真实业务需求决定 attachment、generic action、rich content 等扩展。
+具体 WS message schema 不属于这一阶段的成功标准。
 
-## 21. 一句话定义
+## 19. 一句话定义
 
-> **`<chat-view>` 是一个单上下文、业务无关、极薄的 Web chat viewport；它通过通用 Chat Protocol 连接薄 server，并由业务 ChatBackend 提供真实语义。会话管理、导航和应用编排属于组件之外。**
+> **`<chat-view>` 是一个由单一 WebSocket endpoint 完全驱动的、单上下文、业务无关的极薄 Chat viewport；WebSocket URL 即当前 Chat binding，会话管理、业务语义和应用编排全部位于组件之外。**
