@@ -1,7 +1,7 @@
-# Generic Chat Web Component / Server Design
+# Generic Chat View / Server Design
 
 > Status: **Design Draft**  
-> Scope: 通用单上下文 Chat Web Component、对应的本地 Chat Server，以及业务 Adapter 边界。  
+> Scope: 通用单上下文 `<chat-view>` Web Component、对应的本地 Chat Server，以及业务 Adapter 边界。  
 > Goal: 提供一个足够薄、可组合、可被 Hostra 或普通 Web 页面复用的 Chat capability。
 
 ## 1. 定位
@@ -9,7 +9,7 @@
 本设计定义一套通用 Chat capability：
 
 ```text
-<chat-component>
+<chat-view>
       |
       | WebSocket Chat Protocol
       v
@@ -24,7 +24,7 @@
 
 核心原则：
 
-> `<chat-component>` 是一个 single-context chat viewport。它只展示并操作当前绑定的对话上下文，不拥有 conversation/session discovery、navigation 或 session switching。
+> `<chat-view>` 是一个 single-context chat viewport。它只展示并操作当前绑定的对话上下文，不拥有 conversation/session discovery、navigation 或 session switching。
 
 一个组件实例在任意时刻只对应一个当前 Chat context。需要切换业务上下文时，由外部宿主销毁、重建或重新绑定组件，而不是由组件内部维护会话列表。
 
@@ -72,7 +72,7 @@ World / Draft / Archive 等领域对象
 
 这些能力属于外部宿主或具体业务。
 
-组件也不应逐渐膨胀成完整的 Chat application shell。
+`<chat-view>` 也不应逐渐膨胀成完整的 Chat application shell。
 
 ## 4. 组件结构
 
@@ -145,10 +145,10 @@ optional cancel
 
 ## 5. Web Component 边界
 
-推荐组件名：
+组件名冻结为：
 
 ```html
-<lithdoo-chat></lithdoo-chat>
+<chat-view></chat-view>
 ```
 
 组件只拥有 presentation 和当前连接的交互状态。
@@ -158,9 +158,9 @@ optional cancel
 推荐的最小配置形态：
 
 ```html
-<lithdoo-chat
+<chat-view
   server-url="ws://127.0.0.1:8081/chat"
-></lithdoo-chat>
+></chat-view>
 ```
 
 复杂配置通过 property 传入，而不是不断增加 HTML attribute：
@@ -197,7 +197,7 @@ chat-close
 推荐模型：
 
 ```text
-一个 <lithdoo-chat>
+一个 <chat-view>
         =
 一个当前 connection/context binding
 ```
@@ -478,22 +478,22 @@ Hostra
  +-- process: chat-server
  |
  +-- window A
- |    +-- <lithdoo-chat> -> business context A
+ |    +-- <chat-view> -> business context A
  |
  +-- window B
-      +-- <lithdoo-chat> -> business context B
+      +-- <chat-view> -> business context B
 ```
 
 多个 conversation 可以表现为多个窗口，也可以由更高层业务 shell 决定如何组织。
 
-`<lithdoo-chat>` 本身仍然只处理一个 context。
+`<chat-view>` 本身仍然只处理一个 context。
 
 ## 16. Dayloom Adapter 示例
 
 Dayloom 只是通用 Chat Backend 的一个实现。
 
 ```text
-<lithdoo-chat>
+<chat-view>
       |
       v
 chat-server
@@ -527,7 +527,7 @@ Publication
 Aggregate Head
 ```
 
-如果产品需要展示这些内容，应通过其他 Web Component 或窗口组合，而不是扩大 Chat component 职责。
+如果产品需要展示这些内容，应通过其他 Web Component 或窗口组合，而不是扩大 `<chat-view>` 职责。
 
 ## 17. 与 Editor Capability 的一致性
 
@@ -546,7 +546,7 @@ language server
 对应 Chat：
 
 ```text
-<lithdoo-chat>
+<chat-view>
       |
       v
 chat-server
@@ -570,7 +570,7 @@ Hostra        = local window / process orchestrator
 
 ```text
 packages/
-  chat-component/
+  chat-view/
     src/
       component/
       protocol/
@@ -597,7 +597,7 @@ packages/chat-protocol/
 
 V1 应保持以下约束：
 
-1. 一个 component instance 只绑定一个当前 Chat context。
+1. 一个 `<chat-view>` instance 只绑定一个当前 Chat context。
 2. WC 不实现 session discovery / list / switch / rename / delete。
 3. server 不保存第二份业务 canonical state。
 4. server 不依赖任何具体业务；具体业务通过 ChatBackend adapter 接入。
@@ -613,7 +613,7 @@ V1 应保持以下约束：
 第一版完成时，应至少能够证明：
 
 ```text
-普通浏览器页面可以加载 <lithdoo-chat>
+普通浏览器页面可以加载 <chat-view>
 组件可以连接通用 chat-server
 chat-server 可以加载一个测试 ChatBackend
 用户可以发送文本消息
@@ -629,4 +629,4 @@ Hostra 可以启动 server 并在窗口中承载组件
 
 ## 21. 一句话定义
 
-> **Lithdoo Chat 是一个单上下文、业务无关、极薄的 Web chat viewport；它通过通用 Chat Protocol 连接薄 server，并由业务 ChatBackend 提供真实语义。会话管理、导航和应用编排属于组件之外。**
+> **`<chat-view>` 是一个单上下文、业务无关、极薄的 Web chat viewport；它通过通用 Chat Protocol 连接薄 server，并由业务 ChatBackend 提供真实语义。会话管理、导航和应用编排属于组件之外。**
