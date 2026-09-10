@@ -185,6 +185,8 @@ busy / disabled
 
 是否允许发送、是否允许取消等能力由 WebSocket endpoint 驱动。
 
+此外，composer 自己维护一个极小的本地 `submitting` 状态，用于表示 `sendMessage` JSON-RPC 尚未得到 server 确认的时间窗口。
+
 输入区不负责模型、Agent mode、知识库、World mode 等业务配置。
 
 ## 6. Web Component 公共边界
@@ -370,6 +372,8 @@ cancelOperation
 是否需要独立的 `getSnapshot`、`invokeAction` 或其他 method 暂不冻结，应由真实业务需求继续验证。
 
 JSON-RPC response 只表达 request 是否成功被处理或异步 operation 是否成功建立，不等同于异步业务操作最终完成。
+
+对于 `sendMessage`，RPC success 还承担一个明确的 UI 语义：server 已经接受当前 composer 输入，因此 `<chat-view>` 可以安全清空该输入；它仍然不能据此直接向 transcript 插入 Message。
 
 ## 11. Message 数据模型分离
 
@@ -603,6 +607,8 @@ chat-view 重建 projection
 关键约束是：
 
 > reconnect recovery 由 server-side authoritative state 驱动，而不是由组件猜测。
+
+如果连接在 `sendMessage` RPC 尚未返回时断开，composer 中的用户输入必须保留。V1 不应因为本地曾经发起过请求，就把该输入视为已成功进入 transcript，也不应在没有幂等协议保证的情况下盲目自动重发。
 
 ## 17. Server / Endpoint 定位
 
@@ -1214,7 +1220,128 @@ request
 
 最终是否将此要求定义成严格 wire invariant，需要在实际 server 实现验证后冻结。
 
-### 23.12 Snapshot / Query 与 Event 的一致性
+### 23.12 Composer 提交与 canonical Message
+
+V1 明确不做 optimistic message insertion。
+
+用户点击 Send 后，`<chat-view>` 不立即把输入内容插入正式 transcript，而是进入一个本地 `submitting` 状态：
+
+```text
+idle
+  |
+  | user clicks Send
+  v
+submitting
+  |
+  +-- textarea 保持原内容
+  +-- textarea disabled
+  +-- send button disabled
+```
+
+随后发送 `sendMessage` JSON-RPC request。
+
+如果 RPC 成功返回：
+
+```text
+submitting
+  |
+  | RPC success = server confirmed acceptance
+  v
+clear composer
+leave local submitting state
+```
+
+此时可以恢复 composer 的本地可用状态，但最终是否真的可发送仍由 server capability 决定。
+
+组件的实际发送条件概念上为：
+
+```ts
+canSend =
+  connected &&
+  !submitting &&
+  serverCapabilities.sendMessage;
+```
+
+因此必须区分两种 disabled 来源：
+
+```text
+local submitting disabled
+  = 当前 sendMessage RPC 尚未确认
+
+server capability disabled
+  = server 当前业务状态不允许继续发送
+```
+
+如果 `sendMessage` RPC 失败：
+
+```text
+submitting
+  |
+  | RPC error
+  v
+keep composer content
+leave local submitting state
+```
+
+用户输入不能因为 server reject、网络错误或其他 RPC failure 被清空。
+
+最重要的 projection invariant 是：
+
+> `sendMessage` RPC success 只确认 server 已接受输入，并允许 `<chat-view>` 清空 composer；它本身绝不能直接向正式 Message projection 插入消息。
+
+正式 transcript 的新增只能来自：
+
+```text
+server push -> message.added
+```
+
+因此标准时序为：
+
+```text
+user enters text
+      |
+      v
+click Send
+      |
+      v
+composer = submitting
+textarea/button disabled
+text remains visible
+      |
+      v
+sendMessage RPC
+      |
+      +---- RPC error ----> keep text, leave submitting
+      |
+      v
+RPC success
+      |
+      v
+clear composer
+leave local submitting
+      |
+      v
+message.added
+      |
+      v
+canonical user Message appears in transcript
+```
+
+这里的 `message.added` 表示 server authoritative conversation 中已经存在该 canonical Message。
+
+`<chat-view>` 不维护“看起来已经发送但 server 尚未确认”的临时 Message，也不需要 `sending / failed / retrying` 这类 optimistic transcript state。
+
+这保持了一个简单边界：
+
+```text
+composer draft
+  = client-local transient input
+
+Message projection
+  = server-authoritative state only
+```
+
+### 23.13 Snapshot / Query 与 Event 的一致性
 
 Request/Response 读取到的完整或分离 projection，与 Event Plane 必须描述同一套 normalized state。
 
@@ -1238,6 +1365,8 @@ active operations
 
 不应在 Event Plane 中维护一套只能通过 event 理解、却无法从 server authoritative state 重新构建的隐藏 UI 状态。
 
+注意 composer 中尚未提交成功的文本和本地 `submitting` 属于组件瞬时 UI state，不属于 server authoritative Chat projection，因此不进入上述等式。
+
 这条约束用于保证：
 
 ```text
@@ -1250,7 +1379,7 @@ contract test
 
 都基于同一 projection model。
 
-### 23.13 Event 只描述事实，不发送 UI Command
+### 23.14 Event 只描述事实，不发送 UI Command
 
 禁止把 Server Push Event 设计成 imperative UI command，例如：
 
@@ -1273,7 +1402,7 @@ content.delta(...)
 
 因此 `<chat-view>` 保持 reducer + renderer，而不是远程 UI command executor。
 
-### 23.14 Server Push V1 初步事件集
+### 23.15 Server Push V1 初步事件集
 
 当前草案优先控制在以下 9 个事件：
 
@@ -1330,13 +1459,17 @@ attachment
 13. Message model/content 的读取应支持批量方式，避免 N+1 RPC。
 14. Event 只描述已发生的事实或当前 projection，不充当远程 UI command。
 15. Request/Response state 与 Event reducer 必须描述同一套 authoritative projection。
-16. WC 不实现 session discovery / list / switch / rename / delete。
-17. WC 不理解具体业务 backend、session、World 或 runtime。
-18. endpoint/server 不为了 UI 复制第二份业务 canonical state。
-19. reconnect 后由 server-side state 驱动 UI 恢复。
-20. Hostra 只负责 window/process physical lifecycle 和 endpoint composition。
-21. 通用 `chat-server` 可以是 helper/reference implementation，但不是强制中央 server。
-22. 最终 JSON-RPC method 名称、参数、结果、Message/Content/Status 枚举以及 replay/recovery 细节在 Chat Protocol V1 中单独冻结。
+16. `sendMessage` 不采用 optimistic transcript insertion；正式 Message 只能由 server push `message.added` 建立。
+17. `sendMessage` RPC pending 时 composer 进入本地 `submitting`：保留文本并禁用 textarea 与 Send。
+18. `sendMessage` RPC success 后才清空 composer；RPC failure 必须保留原输入。
+19. composer 的本地 `submitting` 与 server 的 `sendMessage` capability 分离，实际可发送状态同时受两者约束。
+20. WC 不实现 session discovery / list / switch / rename / delete。
+21. WC 不理解具体业务 backend、session、World 或 runtime。
+22. endpoint/server 不为了 UI 复制第二份业务 canonical state。
+23. reconnect 后由 server-side state 驱动 UI 恢复；未确认的 composer 输入仍属于 client-local state。
+24. Hostra 只负责 window/process physical lifecycle 和 endpoint composition。
+25. 通用 `chat-server` 可以是 helper/reference implementation，但不是强制中央 server。
+26. 最终 JSON-RPC method 名称、参数、结果、Message/Content/Status 枚举以及 replay/recovery 细节在 Chat Protocol V1 中单独冻结。
 
 ## 25. V1 成功标准
 
@@ -1349,6 +1482,10 @@ endpoint 可以通过 WS 提供标题 / Chat status
 可以分别获取 Message model 与 Message content
 可以独立接收 Message content / Message status 更新
 用户输入通过 JSON-RPC request 发送
+sendMessage pending 时输入内容保持不变，textarea 与 Send 被禁用
+sendMessage success 后才清空 composer
+sendMessage failure 时保留输入内容
+正式 transcript 不做 optimistic insertion，只由 message.added 更新
 assistant 回复可以通过 content.delta server push event streaming
 send / cancel 等能力由 endpoint 驱动
 JSON-RPC command 与异步 operation 生命周期清晰分离
@@ -1362,4 +1499,4 @@ Hostra 可以启动业务 server，并把动态 ws-url 交给窗口中的 <chat-
 
 ## 26. 一句话定义
 
-> **`<chat-view>` 是一个由单一 WebSocket endpoint 完全驱动的、单上下文、业务无关的极薄 Chat viewport；Request/Response 使用 JSON-RPC，Server Push 使用独立的有序事实事件流，Message 的 model、content 和 status 分离同步，而会话管理、业务语义和应用编排全部位于组件之外。**
+> **`<chat-view>` 是一个由单一 WebSocket endpoint 完全驱动的、单上下文、业务无关的极薄 Chat viewport；Request/Response 使用 JSON-RPC，Server Push 使用独立的有序事实事件流，Message 的 model、content 和 status 分离同步，正式 transcript 只接受 server authoritative event，而会话管理、业务语义和应用编排全部位于组件之外。**
